@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Yeti Posture Studio</title>
+<style>
+  body { margin: 0; background: #1a1a2e; color: #eee; font-family: monospace; display: flex; height: 100vh; }
+  #preview { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #preview canvas { image-rendering: pixelated; border: 2px solid #333; }
+  #panel { width: 340px; background: #16213e; padding: 20px; overflow-y: auto; border-left: 2px solid #333; }
+  h2 { margin: 10px 0 8px; color: #e8845c; font-size: 13px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .row { display: flex; align-items: center; margin: 5px 0; gap: 8px; }
+  .row label { width: 120px; font-size: 11px; flex-shrink: 0; }
+  .row input[type="range"] { flex: 1; }
+  .row span { font-size: 11px; color: #aaa; width: 35px; text-align: right; flex-shrink: 0; }
+  button { background: #e8845c; color: #1a1a2e; border: none; padding: 8px 16px; cursor: pointer; font-family: monospace; font-weight: bold; margin: 4px 2px; font-size: 12px; }
+  button:hover { background: #f4a956; }
+  #output { background: #0a0a1a; padding: 10px; font-size: 10px; white-space: pre-wrap; margin-top: 10px; max-height: 200px; overflow-y: auto; display: none; border: 1px solid #333; }
+  .speed-sim { margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<div id="preview">
+  <h2 style="color:#fcd484; margin-bottom:10px; font-size:16px;">YETI POSTURE STUDIO</h2>
+  <canvas id="display" width="300" height="300"></canvas>
+  <div style="margin-top:8px; font-size:11px; color:#888;">Simulated speed: <span id="speedLabel">0</span> mph</div>
+</div>
+
+<div id="panel">
+
+  <h2>HEAD POSITION</h2>
+  <div class="row"><label>Head X (fwd/back)</label><input type="range" id="headX" min="-10" max="10" value="-2"><span id="headX_v">-2</span></div>
+  <div class="row"><label>Head Y (up/down)</label><input type="range" id="headY" min="-25" max="-5" value="-15"><span id="headY_v">-15</span></div>
+  <div class="row"><label>Max Lean Angle</label><input type="range" id="maxLean" min="0" max="80" value="50"><span id="maxLean_v">0.50</span></div>
+  <div class="row"><label>Lean Rate</label><input type="range" id="leanRate" min="1" max="12" value="6"><span id="leanRate_v">0.06</span></div>
+
+  <h2>HELMET</h2>
+  <div class="section">
+    <div class="row"><label>Show Helmet</label><input type="checkbox" id="helmetOn" checked><span></span></div>
+    <div class="row"><label>Helmet Color</label><input type="color" id="helmetColor" value="#2288cc"><span></span></div>
+    <div class="row"><label>Stripe Color</label><input type="color" id="helmetStripe" value="#44bbee"><span></span></div>
+    <div class="row"><label>Helmet Y</label><input type="range" id="helmetY" min="-8" max="2" value="-3"><span id="helmetY_v">-3</span></div>
+    <div class="row"><label>Helmet X</label><input type="range" id="helmetX" min="-6" max="6" value="0"><span id="helmetX_v">0</span></div>
+  </div>
+
+  <h2>SHOULDERS</h2>
+  <div class="row"><label>Front Shoulder X</label><input type="range" id="shoulderFX" min="-10" max="5" value="-5"><span id="shoulderFX_v">-5</span></div>
+  <div class="row"><label>Back Shoulder X</label><input type="range" id="shoulderBX" min="-2" max="10" value="3"><span id="shoulderBX_v">3</span></div>
+  <div class="row"><label>Shoulder Y</label><input type="range" id="shoulderY" min="-24" max="-14" value="-19"><span id="shoulderY_v">-19</span></div>
+
+  <h2>SCARF</h2>
+  <div class="row"><label>Scarf X (fwd/back)</label><input type="range" id="scarfX" min="-10" max="10" value="0"><span id="scarfX_v">0</span></div>
+  <div class="row"><label>Scarf Y</label><input type="range" id="scarfY" min="-22" max="-14" value="-19"><span id="scarfY_v">-19</span></div>
+  <div class="row"><label>Max Tail Length</label><input type="range" id="scarfLen" min="5" max="30" value="18"><span id="scarfLen_v">18</span></div>
+  <div class="row"><label>Wave Amount</label><input type="range" id="scarfWave" min="0" max="50" value="30"><span id="scarfWave_v">0.3</span></div>
+
+  <h2>BODY TILT</h2>
+  <div class="row"><label>Slope Multiplier</label><input type="range" id="slopeMult" min="0" max="100" value="50"><span id="slopeMult_v">0.50</span></div>
+
+  <h2>SIMULATE SPEED</h2>
+  <div class="row"><label>Speed</label><input type="range" id="simSpeed" min="0" max="80" value="0"><span id="simSpeed_v">0</span></div>
+  <div class="row"><label>Terrain Slope</label><input type="range" id="simSlope" min="-30" max="30" value="0"><span id="simSlope_v">0</span></div>
+
+  <div style="margin-top: 15px;">
+    <button onclick="exportValues()">EXPORT TO GAME</button>
+    <button onclick="resetValues()">RESET</button>
+  </div>
+  <div id="output"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('display');
+const ctx = canvas.getContext('2d');
+const SCALE = 4;
+
+// current sprite colors
+const FUR_MAIN = '#8b5e3c', FUR_SHADOW = '#6d4528', FUR_DARK = '#4a2f1a';
+const BELLY = '#a07050', FACE_SKIN = '#c49a6c', NOSE = '#8a6a5a';
+const EYE = '#222', SCARF_C = '#c75b7a', SCARF_HI = '#d87a94';
+const FRAME = '#4a4a4a', FRAME_HI = '#6a6a6a', SEAT = '#3a3a3a';
+const HANDLE = '#555', CHAIN = '#888';
+
+function val(id) { return +document.getElementById(id).value; }
+
+function updateLabels() {
+  document.getElementById('headX_v').textContent = val('headX');
+  document.getElementById('headY_v').textContent = val('headY');
+  document.getElementById('maxLean_v').textContent = (val('maxLean')/100).toFixed(2);
+  document.getElementById('leanRate_v').textContent = (val('leanRate')/100).toFixed(2);
+  document.getElementById('helmetY_v').textContent = val('helmetY');
+  document.getElementById('helmetX_v').textContent = val('helmetX');
+  document.getElementById('shoulderFX_v').textContent = val('shoulderFX');
+  document.getElementById('shoulderBX_v').textContent = val('shoulderBX');
+  document.getElementById('shoulderY_v').textContent = val('shoulderY');
+  document.getElementById('scarfX_v').textContent = val('scarfX');
+  document.getElementById('scarfY_v').textContent = val('scarfY');
+  document.getElementById('scarfLen_v').textContent = val('scarfLen');
+  document.getElementById('scarfWave_v').textContent = (val('scarfWave')/100).toFixed(1);
+  document.getElementById('slopeMult_v').textContent = (val('slopeMult')/100).toFixed(2);
+  document.getElementById('simSpeed_v').textContent = val('simSpeed');
+  document.getElementById('simSlope_v').textContent = val('simSlope');
+  document.getElementById('speedLabel').textContent = Math.round(val('simSpeed') * 3.5);
+}
+
+function draw() {
+  updateLabels();
+  const speed = val('simSpeed');
+  const slopeAngle = val('simSlope') / 100;
+  const bodyRot = slopeAngle * (val('slopeMult') / 100);
+  const leanAngle = Math.min(speed * (val('leanRate')/100) / 10, val('maxLean') / 100);
+
+  // sky
+  ctx.fillStyle = '#87ceeb';
+  ctx.fillRect(0, 0, 300, 300);
+  // ground
+  ctx.fillStyle = '#5a9e3e';
+  ctx.fillRect(0, 220, 300, 80);
+
+  ctx.save();
+  ctx.translate(150, 210);
+  ctx.scale(SCALE, SCALE);
+
+  // body rotation
+  ctx.save();
+  ctx.rotate(bodyRot);
+  ctx.scale(-1, 1);
+
+  // wheels
+  drawWheel(ctx, 10, 5, 7, Date.now() * 0.003 * speed / 10);
+  drawWheel(ctx, -10, 5, 7, Date.now() * 0.003 * speed / 10);
+
+  // bike frame
+  drawBike(ctx);
+
+  // yeti body
+  drawBody(ctx);
+
+  // head
+  const hx = val('headX'), hy = val('headY');
+  ctx.translate(hx, hy);
+  ctx.rotate(-bodyRot - leanAngle);
+  drawHead(ctx);
+  ctx.rotate(bodyRot + leanAngle);
+  ctx.translate(-hx, -hy);
+
+  // scarf
+  const sx = val('scarfX'), sy = val('scarfY');
+  ctx.translate(sx, sy);
+  const maxLen = val('scarfLen');
+  const waveAmt = val('scarfWave') / 100;
+  const tailLen = Math.min(3 + speed * 1.5 / 10, maxLen);
+  const wave = Math.sin(Date.now() * 0.008) * Math.min(speed * waveAmt / 10, 2);
+  ctx.fillStyle = SCARF_C;
+  ctx.fillRect(-3, -1, 7, 2);
+  ctx.fillStyle = SCARF_HI;
+  ctx.fillRect(-2, -1, 5, 1);
+  ctx.fillStyle = SCARF_C;
+  for (let i = 0; i < tailLen; i++) {
+    const sx = 4 + i;
+    const swy = -1 + Math.sin(i * 0.5 + Date.now() * 0.006) * wave * (i / tailLen);
+    ctx.fillRect(sx, Math.floor(swy), 1, 2);
+  }
+  if (tailLen > 5) {
+    const endX = 4 + Math.floor(tailLen);
+    const endW = Math.sin(Date.now() * 0.01) * Math.min(speed * 0.4 / 10, 3);
+    ctx.fillRect(endX, Math.floor(-1 + endW), 2, 1);
+  }
+
+  ctx.restore();
+  ctx.restore();
+
+  requestAnimationFrame(draw);
+}
+
+function drawWheel(ctx, wx, wy, r, angle) {
+  ctx.fillStyle = '#3a3a3a';
+  ctx.beginPath(); ctx.arc(wx, wy, r+1, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#888';
+  ctx.beginPath(); ctx.arc(wx, wy, r-1, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#555';
+  ctx.beginPath(); ctx.arc(wx, wy, r-3, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#aaa';
+  ctx.beginPath(); ctx.arc(wx, wy, 2, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 0.8;
+  for (let s = 0; s < 6; s++) {
+    const a = angle + s * Math.PI/3;
+    ctx.beginPath(); ctx.moveTo(wx, wy);
+    ctx.lineTo(wx+Math.cos(a)*(r-1), wy+Math.sin(a)*(r-1)); ctx.stroke();
+  }
+}
+
+function drawBike(ctx) {
+  ctx.strokeStyle = FRAME; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(2,2); ctx.lineTo(10,5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7,-7); ctx.lineTo(10,5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7,-7); ctx.lineTo(2,2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7,-7); ctx.lineTo(-5,-9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-5,-9); ctx.lineTo(2,2); ctx.stroke();
+  ctx.strokeStyle = FRAME_HI; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(7,-8); ctx.lineTo(-4,-10); ctx.stroke();
+  ctx.strokeStyle = FRAME; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-5,-9); ctx.lineTo(-7,-4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-7,-4); ctx.lineTo(-10,5); ctx.stroke();
+  ctx.fillStyle = SEAT; ctx.fillRect(4,-12,6,2); ctx.fillRect(6,-10,2,4);
+  ctx.strokeStyle = HANDLE; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-5,-9); ctx.lineTo(-7,-13); ctx.stroke();
+  ctx.fillStyle = HANDLE; ctx.fillRect(-9,-15,4,2);
+  ctx.fillStyle = '#333'; ctx.fillRect(-9,-15,2,2);
+  ctx.fillStyle = FRAME; ctx.fillRect(1,3,3,2);
+  ctx.strokeStyle = CHAIN; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(2,3); ctx.lineTo(8,5); ctx.stroke();
+}
+
+function drawBody(ctx) {
+  const sfx = val('shoulderFX'), sbx = val('shoulderBX'), sy = val('shoulderY');
+  ctx.fillStyle = FUR_SHADOW;
+  ctx.fillRect(5,-17,3,3); ctx.fillRect(6,-14,2,4);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(-1,-20,7,12);
+  ctx.fillStyle = BELLY;
+  ctx.fillRect(0,-18,5,8);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(sfx, sy, 2, 4);
+  ctx.fillRect(sbx, sy, 2, 4);
+  ctx.fillStyle = FUR_SHADOW;
+  ctx.fillRect(-1,-10,7,2);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(-4,-18,4,3); ctx.fillRect(-7,-16,4,3);
+  ctx.fillStyle = FUR_DARK;
+  ctx.fillRect(-9,-15,3,3);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(0,-8,3,5); ctx.fillRect(3,-8,3,4);
+  ctx.fillStyle = FUR_SHADOW;
+  ctx.fillRect(1,-5,3,3); ctx.fillRect(3,-5,3,3);
+  ctx.fillStyle = FUR_DARK;
+  ctx.fillRect(0,-3,4,2); ctx.fillRect(2,-3,4,2);
+}
+
+function drawHead(ctx) {
+  ctx.fillStyle = FUR_SHADOW;
+  ctx.fillRect(4,-16,6,14); ctx.fillRect(3,-14,2,10);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(-4,-16,12,14);
+  ctx.fillRect(-5,-14,1,10);
+  ctx.fillRect(-3,-17,8,1); ctx.fillRect(-3,-2,10,1);
+  ctx.fillStyle = FACE_SKIN;
+  ctx.fillRect(-6,-12,5,8); ctx.fillRect(-4,-14,4,2);
+  ctx.fillRect(-5,-4,4,2);
+  ctx.fillRect(-8,-10,3,5);
+  ctx.fillStyle = NOSE;
+  ctx.fillRect(-9,-10,2,2);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-4,-14,3,4);
+  ctx.fillStyle = EYE;
+  ctx.fillRect(-4,-13,2,3);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-4,-13,1,1);
+  ctx.fillStyle = FUR_DARK;
+  ctx.fillRect(-5,-15,4,1);
+  ctx.fillRect(-7,-6,4,1);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(-2,-20,3,4); ctx.fillRect(1,-21,3,5);
+  ctx.fillRect(4,-19,3,3); ctx.fillRect(7,-18,2,3);
+  ctx.fillStyle = BELLY;
+  ctx.fillRect(-1,-20,2,2); ctx.fillRect(2,-21,2,2);
+  ctx.fillStyle = FUR_SHADOW;
+  ctx.fillRect(6,-16,3,4);
+  ctx.fillStyle = FACE_SKIN;
+  ctx.fillRect(7,-15,1,2);
+  ctx.fillStyle = BELLY;
+  ctx.fillRect(-6,-4,3,2); ctx.fillRect(-5,-2,2,1);
+
+  // helmet
+  if (document.getElementById('helmetOn').checked) {
+    const hx = val('helmetX'), hy = val('helmetY');
+    const hc = document.getElementById('helmetColor').value;
+    const hs = document.getElementById('helmetStripe').value;
+    // shell
+    ctx.fillStyle = hc;
+    ctx.fillRect(-4+hx, -18+hy, 11, 5);
+    ctx.fillRect(-3+hx, -19+hy, 9, 1);
+    ctx.fillRect(-3+hx, -13+hy, 9, 1);
+    ctx.fillRect(-5+hx, -17+hy, 1, 3);
+    // front visor/brim
+    ctx.fillRect(-6+hx, -14+hy, 3, 2);
+    // stripe
+    ctx.fillStyle = hs;
+    ctx.fillRect(-2+hx, -17+hy, 7, 1);
+    // vent holes
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0+hx, -18+hy, 1, 1);
+    ctx.fillRect(3+hx, -18+hy, 1, 1);
+    ctx.fillRect(6+hx, -18+hy, 1, 1);
+  }
+}
+
+function exportValues() {
+  const out = document.getElementById('output');
+  out.style.display = 'block';
+  out.textContent = `// renderer.js values:
+const neckX = ${val('headX')}, neckY = ${val('headY')};
+const leanAngle = Math.min(speed * ${(val('leanRate')/100).toFixed(2)}, ${(val('maxLean')/100).toFixed(2)});
+
+// sprites.js shoulder positions:
+ctx.fillRect(${val('shoulderFX')}, ${val('shoulderY')}, 2, 4); // front shoulder
+ctx.fillRect(${val('shoulderBX')}, ${val('shoulderY')}, 2, 4); // back shoulder
+
+// helmet (in head sprite):
+// helmetX: ${val('helmetX')}, helmetY: ${val('helmetY')}
+// color: ${document.getElementById('helmetColor').value}
+// stripe: ${document.getElementById('helmetStripe').value}
+// enabled: ${document.getElementById('helmetOn').checked}
+
+// renderer.js scarf:
+const scarfX = ${val('scarfX')}, scarfY = ${val('scarfY')};
+const tailLen = Math.min(3 + speed * 1.5, ${val('scarfLen')});
+const wave = Math.sin(Date.now() * 0.008) * Math.min(speed * ${(val('scarfWave')/100).toFixed(1)}, 2);
+
+// renderer.js body rotation:
+const bodyRotation = slope * ${(val('slopeMult')/100).toFixed(2)};`;
+}
+
+function resetValues() {
+  const defaults = {headX:-2,headY:-15,maxLean:50,leanRate:6,helmetY:-3,helmetX:0,shoulderFX:-5,shoulderBX:3,shoulderY:-19,scarfX:0,scarfY:-19,scarfLen:18,scarfWave:30,slopeMult:50,simSpeed:0,simSlope:0};
+  document.getElementById('helmetOn').checked = true;
+  for (const [id,v] of Object.entries(defaults)) document.getElementById(id).value = v;
+}
+
+document.querySelectorAll('input').forEach(el => el.addEventListener('input', () => {}));
+
+draw();
+</script>
+</body>
+</html>

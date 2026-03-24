@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Yeti Downhill</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #0f0f23;
+      touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas#game {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      -webkit-image-rendering: pixelated;
+    }
+    /* Touch control overlays — invisible but tappable */
+    #touch-controls {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      display: none; /* hidden on desktop */
+    }
+    #touch-controls.active { display: block; }
+    .touch-zone {
+      position: absolute;
+      pointer-events: auto;
+      /* debug: uncomment to see zones */
+      /* background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); */
+    }
+    #zone-left { left: 0; top: 0; width: 30%; height: 100%; }
+    #zone-right { right: 0; top: 0; width: 70%; height: 100%; }
+    /* Touch HUD hints */
+    .touch-hint {
+      position: absolute;
+      color: rgba(255,255,255,0.25);
+      font: 10px monospace;
+      pointer-events: none;
+      text-align: center;
+    }
+    #hint-left { left: 5%; top: 45%; }
+    #hint-right { right: 10%; top: 45%; }
+  </style>
+</head>
+<body>
+<canvas id="game" width="320" height="240"></canvas>
+<div id="touch-controls">
+  <div class="touch-zone" id="zone-left"></div>
+  <div class="touch-zone" id="zone-right"></div>
+  <div class="touch-hint" id="hint-left">JUMP</div>
+  <div class="touch-hint" id="hint-right">GO</div>
+</div>
+<script>
+// === PALETTE ===
+const P = {
+  sky: [
+    '#1a6fc4','#2a8ae0','#4aa4f0','#6abcf8','#8ad0fc',
+    '#a8e0ff','#c4ecff','#daf4ff','#eef9ff',
+  ],
+  mtn1: '#5a7a9a', mtn2: '#7a9ab5', mtn3: '#95b5cc',
+  snow1: '#5a9e3e', snow2: '#4a8a32', snow3: '#3b7528', ground: '#2d5a1e',
+  player: '#1a0a2e', playerAccent: '#2a1545',
+  dustLight: '#fdebc8', dustDark: '#d4b88a',
+  trailColor: 'rgba(253,235,200,0.3)',
+  white: '#fdebc8', black: '#1a0533',
+};
+
+// === TERRAIN ===
+const BASE_GROUND = 120;
+const SLOPE = 0.25;
+const TERRAIN_SEGMENT = 400;
+const SEGMENT = 1000;
+
+function seededRand(n) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+const rampCache = {};
+
+function getRamp(segIndex) {
+  if (segIndex < 1) return null;
+  if (rampCache[segIndex]) return rampCache[segIndex];
+  const r = seededRand(segIndex);
+  const start = segIndex * SEGMENT + 60 + Math.floor(r * 100);
+  const type = Math.floor(seededRand(segIndex + 333) * 4);
+  let width, height, gapStart, gapEnd, rampLen;
+  if (type === 0) {
+    width = 100 + Math.floor(seededRand(segIndex + 999) * 40);
+    height = 20 + Math.floor(seededRand(segIndex + 777) * 15);
+  } else if (type === 1) {
+    width = 45 + Math.floor(seededRand(segIndex + 999) * 20);
+    height = 20 + Math.floor(seededRand(segIndex + 777) * 15);
+  } else if (type === 2) {
+    width = 80 + Math.floor(seededRand(segIndex + 999) * 40);
+    height = 55 + Math.floor(seededRand(segIndex + 777) * 30);
+  } else {
+    // gap jump: ramp up (30px) → gap (60-100px) → landing ramp down (30px)
+    rampLen = 30;
+    const gap = 60 + Math.floor(seededRand(segIndex + 888) * 40);
+    gapStart = start + rampLen;
+    gapEnd = gapStart + gap;
+    width = rampLen + gap + rampLen;
+    height = 25 + Math.floor(seededRand(segIndex + 777) * 15);
+  }
+  rampCache[segIndex] = { start, end: start + width, height, type, gapStart, gapEnd, rampLen };
+  return rampCache[segIndex];
+}
+
+function getNearbyRamps(wx) {
+  const seg = Math.floor(wx / SEGMENT);
+  const result = [];
+  for (let s = seg - 2; s <= seg + 2; s++) {
+    const r = getRamp(s);
+    if (r) result.push(r);
+  }
+  return result;
+}
+
+function getTerrainType(wx) {
+  const seg = Math.floor(wx / TERRAIN_SEGMENT);
+  return Math.floor(seededRand(seg * 31 + 17) * 3);
+}
+
+function getTerrainBlend(wx) {
+  const seg = Math.floor(wx / TERRAIN_SEGMENT);
+  const t = (wx - seg * TERRAIN_SEGMENT) / TERRAIN_SEGMENT;
+  if (t < 0.15) return t / 0.15;
+  if (t > 0.85) return 1 - (t - 0.85) / 0.15;
+  return 1;
+}
+
+function getGroundY(wx) {
+  let y = BASE_GROUND + wx * SLOPE;
+  y += Math.sin(wx * 0.012) * 10;
+  y += Math.sin(wx * 0.03) * 5;
+  const type = getTerrainType(wx);
+  const blend = getTerrainBlend(wx);
+  if (type === 0) {
+    y += Math.sin(wx * 0.008) * 3 * blend;
+  } else if (type === 1) {
+    y += Math.sin(wx * 0.015) * 25 * blend;
+    y += Math.sin(wx * 0.04) * 8 * blend;
+  } else {
+    y += Math.sin(wx * 0.08) * 6 * blend;
+    y += Math.sin(wx * 0.15) * 3 * blend;
+    y += Math.sin(wx * 0.25) * 2 * blend;
+  }
+  const nearRamps = getNearbyRamps(wx);
+  for (const r of nearRamps) {
+    if (r.type === 0) {
+      if (wx >= r.start && wx <= r.end) {
+        const t = (wx - r.start) / (r.end - r.start);
+        y += Math.sin(t * Math.PI) * r.height;
+      }
+    } else if (r.type === 3) {
+      // gap jump: takeoff ramp → deep gap → landing ramp
+      if (wx >= r.start && wx < r.gapStart) {
+        // takeoff ramp — curves up
+        const t = (wx - r.start) / r.rampLen;
+        y -= Math.pow(t, 1.5) * r.height;
+      } else if (wx >= r.gapStart && wx <= r.gapEnd) {
+        // gap — deep pit
+        y += r.height * 3;
+      } else if (wx > r.gapEnd && wx <= r.end) {
+        // landing ramp — curves down from height back to ground
+        const t = 1 - (wx - r.gapEnd) / r.rampLen;
+        y -= Math.pow(t, 1.5) * r.height;
+      }
+    } else if (wx >= r.start && wx <= r.end) {
+      const t = (wx - r.start) / (r.end - r.start);
+      if (r.type === 1) {
+        y -= Math.pow(t, 2) * r.height;
+      } else {
+        y -= Math.pow(t, 2.5) * r.height;
+      }
+    }
+  }
+  return y;
+}
+
+function getGroundSlope(wx) {
+  return Math.atan2(getGroundY(wx + 1) - getGroundY(wx - 1), 2);
+}
+
+function getTreesInRange(startX, endX) {
+  const result = [], step = 150;
+  const first = Math.floor(startX / step) * step;
+  for (let base = first; base <= endX; base += step) {
+    const tx = base + Math.floor(seededRand(base * 3 + 7) * 80);
+    if (tx >= startX && tx <= endX) result.push(tx);
+  }
+  return result;
+}
+
+function getCowsInRange(startX, endX) {
+  const result = [], step = 250;
+  const first = Math.floor(startX / step) * step;
+  for (let base = first; base <= endX; base += step) {
+    if (seededRand(base * 13 + 41) > 0.5) continue;
+    const cx = base + Math.floor(seededRand(base * 5 + 19) * 120);
+    if (cx >= startX && cx <= endX) result.push(cx);
+  }
+  return result;
+}
+
+function getTreeVariant(tx) {
+  return Math.floor(seededRand(tx * 7) * 100) % 3;
+}
+
+// === SPRITES ===
+function createCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return { canvas: c, ctx: c.getContext('2d') };
+}
+
+const treeSprites = [0, 1, 2].map(v => {
+  const { canvas, ctx } = createCanvas(28, 52);
+  const trunk = '#5a3a1e', canopyDark = '#2a5e1a', canopyMid = '#3a7a28', canopyLight = '#4a9035';
+  if (v === 0) {
+    ctx.fillStyle = trunk; ctx.fillRect(12, 24, 4, 28);
+    ctx.fillStyle = canopyDark; ctx.beginPath(); ctx.arc(14, 16, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = canopyMid; ctx.beginPath(); ctx.arc(12, 14, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = canopyLight; ctx.beginPath(); ctx.arc(11, 12, 7, 0, Math.PI * 2); ctx.fill();
+  } else if (v === 1) {
+    ctx.fillStyle = trunk; ctx.fillRect(12, 28, 4, 24);
+    ctx.fillStyle = canopyDark; ctx.beginPath(); ctx.arc(14, 20, 12, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = canopyMid; ctx.beginPath(); ctx.arc(16, 18, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = canopyLight; ctx.beginPath(); ctx.arc(13, 16, 7, 0, Math.PI * 2); ctx.fill();
+  } else {
+    ctx.fillStyle = trunk; ctx.fillRect(12, 32, 3, 20);
+    ctx.fillStyle = canopyDark; ctx.beginPath(); ctx.arc(13, 26, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = canopyMid; ctx.beginPath(); ctx.arc(12, 24, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = canopyLight; ctx.beginPath(); ctx.arc(11, 23, 5, 0, Math.PI * 2); ctx.fill();
+  }
+  return canvas;
+});
+
+const SPRITE_W = 44, SPRITE_H = 62, SPRITE_OX = 22, SPRITE_OY = 42;
+const FRAME_COLOR = '#4a4a4a', FRAME_HI = '#6a6a6a', SEAT_COLOR = '#3a3a3a';
+const CHAIN_COLOR = '#888', HANDLEBAR = '#555';
+const FUR_MAIN = '#8b5e3c', FUR_SHADOW = '#6d4528', FUR_DARK = '#4a2f1a';
+const BELLY = '#a07050', FACE_SKIN = '#c49a6c', EYE_COLOR = '#222', NOSE_COLOR = '#8a6a5a';
+const SCARF = '#c75b7a';
+
+const bikeFrameSprite = (() => {
+  const { canvas, ctx } = createCanvas(SPRITE_W, SPRITE_H);
+  ctx.translate(SPRITE_OX, SPRITE_OY);
+  const rwx = 10, rwy = 5, fwx = -10, fwy = 5;
+  ctx.strokeStyle = FRAME_COLOR; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(2, 2); ctx.lineTo(rwx, rwy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7, -7); ctx.lineTo(rwx, rwy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7, -7); ctx.lineTo(2, 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7, -7); ctx.lineTo(-5, -9); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-5, -9); ctx.lineTo(2, 2); ctx.stroke();
+  ctx.strokeStyle = FRAME_HI; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(7, -8); ctx.lineTo(-4, -10); ctx.stroke();
+  ctx.strokeStyle = FRAME_COLOR; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-5, -9); ctx.lineTo(-7, -4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-7, -4); ctx.lineTo(fwx, fwy); ctx.stroke();
+  ctx.fillStyle = SEAT_COLOR; ctx.fillRect(4, -12, 6, 2); ctx.fillRect(6, -10, 2, 4);
+  ctx.strokeStyle = HANDLEBAR; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-5, -9); ctx.lineTo(-7, -13); ctx.stroke();
+  ctx.fillStyle = HANDLEBAR; ctx.fillRect(-9, -15, 4, 2);
+  ctx.fillStyle = '#333'; ctx.fillRect(-9, -15, 2, 2);
+  ctx.fillStyle = FRAME_COLOR; ctx.fillRect(1, 3, 3, 2);
+  ctx.strokeStyle = CHAIN_COLOR; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(2, 3); ctx.lineTo(rwx - 2, rwy); ctx.stroke();
+  // yeti body
+  ctx.fillStyle = FUR_SHADOW; ctx.fillRect(5, -17, 3, 3); ctx.fillRect(6, -14, 2, 4);
+  ctx.fillStyle = FUR_MAIN; ctx.fillRect(-1, -20, 7, 12);
+  ctx.fillStyle = BELLY; ctx.fillRect(0, -18, 5, 8);
+  ctx.fillStyle = FUR_MAIN; ctx.fillRect(-2, -19, 2, 4); ctx.fillRect(5, -19, 2, 4);
+  ctx.fillStyle = FUR_SHADOW; ctx.fillRect(-1, -10, 7, 2);
+  ctx.fillStyle = FUR_MAIN; ctx.fillRect(-4, -18, 4, 3); ctx.fillRect(-7, -16, 4, 3);
+  ctx.fillStyle = FUR_DARK; ctx.fillRect(-9, -15, 3, 3);
+  ctx.fillStyle = FUR_MAIN; ctx.fillRect(0, -8, 3, 5); ctx.fillRect(3, -8, 3, 4);
+  ctx.fillStyle = FUR_SHADOW; ctx.fillRect(1, -5, 3, 3); ctx.fillRect(3, -5, 3, 3);
+  ctx.fillStyle = FUR_DARK; ctx.fillRect(0, -3, 4, 2); ctx.fillRect(2, -3, 4, 2);
+  return canvas;
+})();
+
+const HEAD_W = 32, HEAD_H = 30, HEAD_OX = 16, HEAD_OY = 22;
+const yetiHeadSprite = (() => {
+  const { canvas, ctx } = createCanvas(HEAD_W, HEAD_H);
+  ctx.translate(HEAD_OX, HEAD_OY);
+  ctx.fillStyle = FUR_SHADOW; ctx.fillRect(4, -16, 6, 14); ctx.fillRect(3, -14, 2, 10);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(-4, -16, 12, 14); ctx.fillRect(-5, -14, 1, 10);
+  ctx.fillRect(-3, -17, 8, 1); ctx.fillRect(-3, -2, 10, 1);
+  ctx.fillStyle = FACE_SKIN;
+  ctx.fillRect(-6, -12, 5, 8); ctx.fillRect(-4, -14, 4, 2); ctx.fillRect(-5, -4, 4, 2);
+  ctx.fillRect(-8, -10, 3, 5);
+  ctx.fillStyle = NOSE_COLOR; ctx.fillRect(-9, -10, 2, 2);
+  ctx.fillStyle = '#fff'; ctx.fillRect(-4, -14, 3, 4);
+  ctx.fillStyle = EYE_COLOR; ctx.fillRect(-4, -13, 2, 3);
+  ctx.fillStyle = '#fff'; ctx.fillRect(-4, -13, 1, 1);
+  ctx.fillStyle = FUR_DARK; ctx.fillRect(-5, -15, 4, 1); ctx.fillRect(-7, -6, 4, 1);
+  ctx.fillStyle = FUR_MAIN;
+  ctx.fillRect(-2, -20, 3, 4); ctx.fillRect(1, -21, 3, 5);
+  ctx.fillRect(4, -19, 3, 3); ctx.fillRect(7, -18, 2, 3);
+  ctx.fillStyle = BELLY; ctx.fillRect(-1, -20, 2, 2); ctx.fillRect(2, -21, 2, 2);
+  ctx.fillStyle = FUR_SHADOW; ctx.fillRect(6, -16, 3, 4);
+  ctx.fillStyle = FACE_SKIN; ctx.fillRect(7, -15, 1, 2);
+  ctx.fillStyle = BELLY; ctx.fillRect(-6, -4, 3, 2); ctx.fillRect(-5, -2, 2, 1);
+  return canvas;
+})();
+
+const cowSprite = (() => {
+  const { canvas, ctx } = createCanvas(20, 14);
+  ctx.fillStyle = '#f0f0f0'; ctx.fillRect(4, 3, 12, 7);
+  ctx.fillStyle = '#222'; ctx.fillRect(5, 4, 4, 3); ctx.fillRect(11, 5, 3, 3);
+  ctx.fillStyle = '#f0f0f0'; ctx.fillRect(1, 2, 4, 5);
+  ctx.fillStyle = '#e8b8a0'; ctx.fillRect(0, 4, 2, 3);
+  ctx.fillStyle = '#222'; ctx.fillRect(2, 3, 1, 1);
+  ctx.fillStyle = '#f0f0f0'; ctx.fillRect(1, 1, 2, 2); ctx.fillRect(4, 1, 2, 2);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(5, 10, 2, 4); ctx.fillRect(9, 10, 2, 4); ctx.fillRect(13, 10, 2, 4);
+  ctx.fillRect(16, 3, 3, 1); ctx.fillRect(18, 4, 1, 2);
+  ctx.fillStyle = '#e8b8a0'; ctx.fillRect(10, 9, 3, 2);
+  return canvas;
+})();
+
+function drawWheel(ctx, wx, wy, r, angle) {
+  ctx.fillStyle = '#3a3a3a'; ctx.beginPath(); ctx.arc(wx, wy, r + 1, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#888'; ctx.beginPath(); ctx.arc(wx, wy, r - 1, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#555'; ctx.beginPath(); ctx.arc(wx, wy, r - 3, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#aaa'; ctx.beginPath(); ctx.arc(wx, wy, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 0.8;
+  for (let s = 0; s < 6; s++) {
+    const a = angle + s * Math.PI / 3;
+    ctx.beginPath(); ctx.moveTo(wx, wy);
+    ctx.lineTo(wx + Math.cos(a) * (r - 1), wy + Math.sin(a) * (r - 1)); ctx.stroke();
+  }
+}
+
+// === GAME ===
+const GRAVITY = 0.18, FRICTION = 0.97, ACCEL = 0.1, BOUNCE = 0.15;
+const MAX_CHARGE = 8, MIN_JUMP = -0.5, MAX_JUMP = -1.9;
+
+const player = { x: 50, y: 100, r: 10, vx: 0, vy: 0, onGround: false, angle: 0, tilt: 0, jumpCharge: 0, charging: false, smoothSlope: 0, coyoteFrames: 0, wasOnGround: false, landingVy: 0 };
+const camera = { x: 0, y: 0 };
+const keys = {};
+let particles = [], trail = [];
+let spaceWasDown = false;
+const COYOTE_TIME = 6; // frames after leaving ground where jump still works
+const PUMP_SPEED_BONUS = 0.35; // speed gained per frame when pumping on downslope
+const PUMP_LAUNCH_MULT = 0.6; // extra upward force when releasing on upslope
+
+document.addEventListener('keydown', e => { e.preventDefault(); keys[e.key] = true; });
+document.addEventListener('keyup', e => { e.preventDefault(); keys[e.key] = false; });
+
+// === TOUCH CONTROLS ===
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const touchCtrl = document.getElementById('touch-controls');
+if (isTouchDevice) touchCtrl.classList.add('active');
+
+function handleTouchZone(zoneId, keyName) {
+  const el = document.getElementById(zoneId);
+  el.addEventListener('touchstart', e => { e.preventDefault(); keys[keyName] = true; }, { passive: false });
+  el.addEventListener('touchend', e => { e.preventDefault(); keys[keyName] = false; }, { passive: false });
+  el.addEventListener('touchcancel', e => { keys[keyName] = false; });
+}
+handleTouchZone('zone-left', ' ');
+handleTouchZone('zone-right', 'ArrowRight');
+
+// Prevent iOS rubber-band scrolling and pinch zoom
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('gesturechange', e => e.preventDefault());
+document.addEventListener('gestureend', e => e.preventDefault());
+
+function spawnParticles(x, y, count, color, spread) {
+  spread = spread || 4;
+  for (let i = 0; i < count; i++) {
+    particles.push({ x, y, vx: (Math.random() - 0.5) * spread, vy: -Math.random() * 3 - 1,
+      life: 15 + Math.random() * 25, size: 1 + Math.floor(Math.random() * 2), color });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.vx *= 0.97; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  if (Math.abs(player.vx) > 1.5) trail.push({ x: player.x - player.vx * 2, y: player.y, life: 8 });
+  for (let i = trail.length - 1; i >= 0; i--) { trail[i].life--; if (trail[i].life <= 0) trail.splice(i, 1); }
+  if (player.onGround && Math.abs(player.vx) > 2 && Math.random() < 0.4)
+    spawnParticles(player.x - player.vx, player.y + player.r, 1, '#e8d4a8', 2);
+}
+
+function update() {
+  const slope = getGroundSlope(player.x);
+
+  if (keys['ArrowRight']) player.vx += ACCEL;
+  if (keys['ArrowLeft'] && player.vx > 0) {
+    player.vx *= 0.94;
+    if (player.onGround && Math.abs(player.vx) > 1) spawnParticles(player.x, player.y + player.r, 1, '#d4b88a', 2);
+  }
+  if (keys['ArrowUp']) { player.tilt += 0.08; if (player.tilt > 0.7) player.tilt = 0.7; }
+  else { player.tilt *= 0.85; }
+  if (player.onGround) { player.vx *= player.charging ? 0.98 : FRICTION; }
+  else { player.vx *= 0.98; }
+
+  // === COYOTE TIME ===
+  if (player.onGround) {
+    player.coyoteFrames = COYOTE_TIME;
+  } else {
+    player.coyoteFrames--;
+  }
+  const canJump = player.onGround || player.coyoteFrames > 0;
+
+  // === PUMP MECHANIC ===
+  // Holding on downslope (slope > 0 = going downhill) = tuck for speed
+  if (keys[' '] && player.onGround && slope > 0.05) {
+    player.vx += PUMP_SPEED_BONUS * slope;
+    // subtle dust when pumping
+    if (Math.random() < 0.3) spawnParticles(player.x, player.y + player.r, 1, '#b8d4a0', 1.5);
+  }
+
+  // === CHARGE JUMP (enhanced with pump) ===
+  if (keys[' '] && canJump && !player.charging) player.charging = true;
+  if (keys[' '] && player.charging) player.jumpCharge = Math.min(player.jumpCharge + 4, MAX_CHARGE);
+
+  const released = !keys[' '] && spaceWasDown;
+  if (player.charging && released) {
+    const t = player.jumpCharge / MAX_CHARGE;
+    const speedBoost = Math.min(Math.abs(player.vx) * 0.3, 2);
+    const slopeBoost = slope < 0 ? Math.abs(slope) * player.vx * 0.5 : 0;
+    // pump launch: releasing on upslope (slope < 0) gives extra pop
+    const pumpBoost = slope < -0.05 ? Math.abs(slope) * Math.abs(player.vx) * PUMP_LAUNCH_MULT : 0;
+    player.vy += MIN_JUMP + (MAX_JUMP - MIN_JUMP) * t - speedBoost - slopeBoost - pumpBoost;
+    player.onGround = false;
+    player.coyoteFrames = 0;
+    const particleCount = 3 + Math.floor(t * 8) + (pumpBoost > 0.5 ? 5 : 0);
+    spawnParticles(player.x, player.y + player.r, particleCount, pumpBoost > 0.5 ? '#ffe066' : '#fdebc8');
+    player.charging = false; player.jumpCharge = 0;
+  }
+  spaceWasDown = !!keys[' '];
+
+  // track if we were on ground before this frame (for landing detection)
+  player.wasOnGround = player.onGround;
+
+  player.vy += GRAVITY;
+  player.x += player.vx; player.y += player.vy;
+  if (player.x - player.r < camera.x) { player.x = camera.x + player.r; player.vx = 0; }
+
+  const groundY = getGroundY(player.x);
+  if (player.y + player.r >= groundY) {
+    player.y = groundY - player.r;
+    const landSlope = getGroundSlope(player.x);
+
+    // === LANDING ANGLE BONUS ===
+    if (!player.wasOnGround && player.vy > 1) {
+      // velocity angle vs ground angle
+      const velAngle = Math.atan2(player.vy, player.vx);
+      const groundAngle = Math.atan(landSlope);
+      const angleDiff = velAngle - groundAngle;
+
+      if (landSlope > 0.15 && angleDiff < 0.8) {
+        // landing on downslope — speed boost!
+        const bonus = Math.min(landSlope * 1.5, 2.0);
+        player.vx += bonus;
+        spawnParticles(player.x, player.y + player.r, 6, '#ffe066', 3);
+      } else if (landSlope < -0.15 && player.vy > 2) {
+        // landing on upslope — speed penalty
+        player.vx *= 0.8;
+        spawnParticles(player.x, player.y + player.r, 4, '#d4886a', 2);
+      }
+    }
+
+    if (player.vy > 2) { player.vy = -player.vy * BOUNCE; spawnParticles(player.x, player.y + player.r, 3, '#d4b88a'); }
+    else { player.vy = 0; player.onGround = true; }
+    player.vx += Math.sin(landSlope) * 0.15;
+  } else { player.onGround = false; }
+
+  // === GAP FALL DETECTION ===
+  const nearRamps = getNearbyRamps(player.x);
+  for (const r of nearRamps) {
+    if (r.type === 3 && player.x >= r.gapStart && player.x <= r.gapEnd) {
+      // player is over the gap — check if they fell in
+      const lipY = getGroundY(r.gapStart - 1);
+      if (player.y + player.r > lipY + 30) {
+        // fell into gap! reset past the landing ramp
+        player.x = r.end + 5;
+        player.y = getGroundY(player.x) - player.r;
+        player.vx = Math.max(player.vx * 0.5, 1.5);
+        player.vy = 0;
+        player.onGround = true;
+        spawnParticles(player.x, player.y, 8, '#d4886a', 5);
+        break;
+      }
+    }
+  }
+
+  player.angle += player.vx * 0.15;
+  const targetSlope = player.onGround ? getGroundSlope(player.x) : 0;
+  player.smoothSlope += (targetSlope - player.smoothSlope) * 0.15;
+
+  const screenX = player.x - camera.x;
+  if (screenX > 120) camera.x = player.x - 120;
+  if (camera.x < 0) camera.x = 0;
+  camera.y += ((player.y - 120) - camera.y) * 0.1;
+
+  updateParticles();
+}
+
+// === RENDERER ===
+function drawMountainLayer(ctx, color, parallax, baseY, height, freq) {
+  ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(0, 240);
+  for (let x = 0; x <= 320; x += 2) {
+    const wx = x + camera.x * parallax;
+    ctx.lineTo(x, baseY - Math.sin(wx * freq) * height * 0.5
+      - Math.sin(wx * freq * 2.3 + 1) * height * 0.25
+      - Math.sin(wx * freq * 0.7 + 3) * height * 0.25);
+  }
+  ctx.lineTo(320, 240); ctx.closePath(); ctx.fill();
+}
+
+function draw(ctx) {
+  const sky = P.sky, bandH = 240 / (sky.length - 1);
+  for (let i = 0; i < sky.length - 1; i++) {
+    ctx.fillStyle = sky[i];
+    ctx.fillRect(0, Math.floor(i * bandH), 320, Math.floor((i + 1) * bandH) - Math.floor(i * bandH));
+  }
+
+  const sunX = Math.floor(250 - camera.x * 0.001);
+  ctx.fillStyle = '#ffe066'; ctx.beginPath(); ctx.arc(sunX, 45, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff8cc'; ctx.beginPath(); ctx.arc(sunX, 45, 8, 0, Math.PI * 2); ctx.fill();
+
+  drawMountainLayer(ctx, P.mtn1, 0.02, 100, 80, 0.008);
+  drawMountainLayer(ctx, P.mtn2, 0.04, 120, 60, 0.012);
+  drawMountainLayer(ctx, P.mtn3, 0.07, 140, 45, 0.018);
+
+  const visibleTrees = getTreesInRange(camera.x - 30, camera.x + 350);
+  for (const tx of visibleTrees) {
+    ctx.drawImage(treeSprites[getTreeVariant(tx)], Math.floor(tx - camera.x) - 12, Math.floor(getGroundY(tx) - camera.y) - 46);
+  }
+
+  const visibleCows = getCowsInRange(camera.x - 20, camera.x + 340);
+  for (const cx of visibleCows) {
+    ctx.drawImage(cowSprite, Math.floor(cx - camera.x) - 10, Math.floor(getGroundY(cx) - camera.y) - 14);
+  }
+
+  for (let i = 0; i < 320; i++) {
+    const wx = i + camera.x, gy = Math.floor(getGroundY(wx) - camera.y);
+    ctx.fillStyle = P.snow1; ctx.fillRect(i, gy, 1, 3);
+    ctx.fillStyle = P.snow2; ctx.fillRect(i, gy + 3, 1, 4);
+    ctx.fillStyle = P.snow3; ctx.fillRect(i, gy + 7, 1, 6);
+    ctx.fillStyle = P.ground; ctx.fillRect(i, gy + 13, 1, 240 - gy);
+    if ((i + Math.floor(wx)) % 6 === 0) { ctx.fillStyle = P.snow2; ctx.fillRect(i, gy + 1, 1, 1); }
+  }
+
+  const visibleRamps = getNearbyRamps(camera.x + 160);
+  for (const r of visibleRamps) {
+    if (r.type === 3) {
+      // === WOODEN GAP JUMP RAMP ===
+      const PLANK = '#8B6914';
+      const PLANK_HI = '#a07828';
+      const PLANK_DK = '#6b4f10';
+      const BEAM = '#5a3a1e';
+
+      // takeoff ramp
+      for (let i = 0; i < r.rampLen; i++) {
+        const wx = r.start + i;
+        const sx = Math.floor(wx - camera.x);
+        if (sx < -5 || sx > 325) continue;
+        const gy = Math.floor(getGroundY(wx) - camera.y);
+        const baseGy = Math.floor((BASE_GROUND + wx * SLOPE + Math.sin(wx * 0.012) * 10 + Math.sin(wx * 0.03) * 5) - camera.y);
+        // plank surface
+        ctx.fillStyle = (i % 4 < 2) ? PLANK : PLANK_HI;
+        ctx.fillRect(sx, gy, 1, 2);
+        // support beam underneath
+        ctx.fillStyle = BEAM;
+        ctx.fillRect(sx, gy + 2, 1, baseGy - gy - 1);
+        // cross braces every 8px
+        if (i % 8 === 0 && baseGy - gy > 4) {
+          ctx.fillStyle = PLANK_DK;
+          ctx.fillRect(sx, gy + Math.floor((baseGy - gy) * 0.4), 2, 1);
+        }
+      }
+      // landing ramp
+      for (let i = 0; i < r.rampLen; i++) {
+        const wx = r.gapEnd + i;
+        const sx = Math.floor(wx - camera.x);
+        if (sx < -5 || sx > 325) continue;
+        const gy = Math.floor(getGroundY(wx) - camera.y);
+        const baseGy = Math.floor((BASE_GROUND + wx * SLOPE + Math.sin(wx * 0.012) * 10 + Math.sin(wx * 0.03) * 5) - camera.y);
+        ctx.fillStyle = (i % 4 < 2) ? PLANK : PLANK_HI;
+        ctx.fillRect(sx, gy, 1, 2);
+        ctx.fillStyle = BEAM;
+        ctx.fillRect(sx, gy + 2, 1, baseGy - gy - 1);
+        if (i % 8 === 0 && baseGy - gy > 4) {
+          ctx.fillStyle = PLANK_DK;
+          ctx.fillRect(sx, gy + Math.floor((baseGy - gy) * 0.4), 2, 1);
+        }
+      }
+      // lip edge highlight
+      const lipX = Math.floor(r.gapStart - camera.x);
+      const lipY = Math.floor(getGroundY(r.gapStart - 1) - camera.y);
+      ctx.fillStyle = PLANK_HI;
+      ctx.fillRect(lipX - 1, lipY - 1, 2, 3);
+    } else {
+      // flag marker for other ramp types
+      const mx = Math.floor(r.start - 25 - camera.x), my = Math.floor(getGroundY(r.start - 25) - camera.y);
+      if (mx < -20 || mx > 340) continue;
+      ctx.fillStyle = P.mtn3; ctx.fillRect(mx + 4, my - 18, 2, 18);
+      ctx.fillStyle = '#c75b7a'; ctx.fillRect(mx + 6, my - 18, 8, 5);
+    }
+  }
+
+  for (const t of trail) {
+    ctx.fillStyle = P.dustLight; ctx.globalAlpha = t.life / 8 * 0.25;
+    ctx.fillRect(Math.floor(t.x - camera.x), Math.floor(t.y - camera.y) - 4, 3, 1);
+    ctx.fillRect(Math.floor(t.x - camera.x) - 2, Math.floor(t.y - camera.y) - 2, 2, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  for (const p of particles) {
+    ctx.fillStyle = p.color; ctx.globalAlpha = Math.min(1, p.life / 20);
+    ctx.fillRect(Math.floor(p.x - camera.x), Math.floor(p.y - camera.y), p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+
+  // player
+  const px = Math.floor(player.x - camera.x), py = Math.floor(player.y - camera.y);
+  const slope = player.smoothSlope;
+  const chargeT = player.jumpCharge / MAX_CHARGE;
+  const squashY = 1 - chargeT * 0.35, squashX = 1 + chargeT * 0.15;
+  const bodyRotation = slope * 0.47 - player.tilt;
+  const speed = Math.abs(player.vx);
+  const leanAngle = Math.min(speed * 0.01, 0.80);
+
+  ctx.save();
+  ctx.translate(px, py + chargeT * 6);
+  ctx.rotate(bodyRotation);
+  ctx.scale(-squashX, squashY);
+  drawWheel(ctx, 10, 5, 7, player.angle);
+  drawWheel(ctx, -10, 5, 7, player.angle);
+  ctx.drawImage(bikeFrameSprite, -SPRITE_OX, -SPRITE_OY);
+  ctx.translate(-3, -15);
+  ctx.rotate(-bodyRotation - leanAngle);
+  ctx.drawImage(yetiHeadSprite, -HEAD_OX, -HEAD_OY);
+  ctx.restore();
+
+  // scarf
+  ctx.save();
+  ctx.translate(px, py + chargeT * 6);
+  ctx.rotate(bodyRotation);
+  ctx.scale(-squashX, squashY);
+  ctx.translate(0, -17);
+  ctx.fillStyle = '#c75b7a'; ctx.fillRect(-3, -1, 7, 2);
+  ctx.fillStyle = '#d87a94'; ctx.fillRect(-2, -1, 5, 1);
+  const tailLen = Math.min(3 + speed * 1.5, 29);
+  const wave = Math.sin(Date.now() * 0.008) * Math.min(speed * 0.5, 2);
+  ctx.fillStyle = '#c75b7a';
+  for (let i = 0; i < tailLen; i++) {
+    const sy = -1 + Math.sin(i * 0.5 + Date.now() * 0.006) * wave * (i / tailLen);
+    ctx.fillRect(4 + i, Math.floor(sy), 1, 2);
+  }
+  if (tailLen > 5) {
+    const endWave = Math.sin(Date.now() * 0.01) * Math.min(speed * 0.4, 3);
+    ctx.fillRect(4 + Math.floor(tailLen), Math.floor(-1 + endWave), 2, 1);
+  }
+  ctx.restore();
+
+  // HUD
+  ctx.fillStyle = P.white; ctx.font = '8px monospace'; ctx.textAlign = 'left';
+  ctx.fillText(Math.abs(Math.round(player.vx * 3.5)) + ' mph', 4, 12);
+}
+
+// === RESPONSIVE CANVAS ===
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  // fit 4:3 aspect ratio to screen
+  const aspect = 320 / 240;
+  let cw, ch;
+  if (w / h > aspect) {
+    ch = h;
+    cw = Math.floor(h * aspect);
+  } else {
+    cw = w;
+    ch = Math.floor(w / aspect);
+  }
+  canvas.style.width = cw + 'px';
+  canvas.style.height = ch + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+// iOS orientation change
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 100));
+
+// Lock to landscape hint (iOS Safari)
+if (isTouchDevice && window.innerHeight > window.innerWidth) {
+  // Show brief rotate hint
+  const hint = document.createElement('div');
+  hint.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);color:#fdebc8;display:flex;justify-content:center;align-items:center;font:16px monospace;z-index:999;text-align:center;padding:20px;';
+  hint.innerHTML = 'Rotate your device to landscape for the best experience.<br><br><span style="font-size:12px;opacity:0.5">Tap to dismiss</span>';
+  document.body.appendChild(hint);
+  hint.addEventListener('click', () => hint.remove());
+  hint.addEventListener('touchstart', () => hint.remove());
+  window.addEventListener('orientationchange', () => { if (hint.parentNode) hint.remove(); });
+}
+
+// === GAME LOOP ===
+function loop() { update(); draw(ctx); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

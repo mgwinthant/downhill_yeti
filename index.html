@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yeti Downhill</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0f0f23;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      gap: 24px;
+    }
+    canvas {
+      image-rendering: pixelated;
+      border: 2px solid #333;
+      width: 640px;
+      height: 480px;
+    }
+    .controls {
+      font-family: monospace;
+      color: #ccc;
+      font-size: 13px;
+    }
+    .controls h3 {
+      color: #ffe066;
+      font-size: 15px;
+      margin: 0 0 8px 0;
+      text-align: center;
+    }
+    .controls table {
+      border-collapse: collapse;
+    }
+    .controls td {
+      padding: 4px 10px;
+      border: 1px solid #333;
+      text-align: center;
+    }
+    .controls .key {
+      color: #ffe066;
+      font-weight: bold;
+    }
+    .controls .action {
+      color: #aaa;
+      text-align: left;
+    }
+    @media (max-width: 900px) {
+      .controls { display: none; }
+    }
+  </style>
+</head>
+<body>
+<canvas id="game" width="320" height="240"></canvas>
+<div class="controls">
+  <h3>Controls</h3>
+  <table>
+    <tr><td class="key">&larr; &rarr;</td><td class="action">Tilt (air)</td></tr>
+    <tr><td class="key">&darr;</td><td class="action">Brake</td></tr>
+    <tr><td class="key">X</td><td class="action">Pedal</td></tr>
+    <tr><td class="key">Z</td><td class="action">Jump (hold)</td></tr>
+  </table>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

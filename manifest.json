@@ -1,0 +1,9 @@
+{
+  "name": "Yeti Downhill",
+  "short_name": "Yeti",
+  "start_url": "/yeti-downhill.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0f0f23",
+  "theme_color": "#0f0f23"
+}
